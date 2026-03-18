@@ -54,32 +54,48 @@ export default function App() {
   const apiKey = process.env.REACT_APP_ANTHROPIC_KEY || "";
 
   useEffect(() => {
-    // Handle Google redirect return
+    let unsubscribe = () => {};
+
+    // CRITICAL: check redirect result FIRST before setting up auth listener
     getRedirectResult(auth)
       .then(async (result) => {
         if (result?.user) {
+          // Coming back from Google redirect — handle immediately
           const profile = await getOrCreateUser(result.user);
           setAuthUser(result.user);
           setUserProfile(profile);
           setLoading(false);
+          return; // Don't need auth listener — already handled
         }
+
+        // No redirect result — set up normal auth listener
+        unsubscribe = onAuthStateChanged(auth, async (user) => {
+          if (user) {
+            const profile = await getOrCreateUser(user);
+            setAuthUser(user);
+            setUserProfile(profile);
+          } else {
+            setAuthUser(null);
+            setUserProfile(null);
+          }
+          setLoading(false);
+        });
       })
       .catch((err) => {
         console.error("Redirect error:", err);
+        // Fall back to auth listener on error
+        unsubscribe = onAuthStateChanged(auth, async (user) => {
+          if (user) {
+            const profile = await getOrCreateUser(user);
+            setAuthUser(user);
+            setUserProfile(profile);
+          } else {
+            setAuthUser(null);
+            setUserProfile(null);
+          }
+          setLoading(false);
+        });
       });
-
-    // Ongoing auth state listener
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        const profile = await getOrCreateUser(user);
-        setAuthUser(user);
-        setUserProfile(profile);
-      } else {
-        setAuthUser(null);
-        setUserProfile(null);
-      }
-      setLoading(false);
-    });
 
     return () => unsubscribe();
   }, []);
