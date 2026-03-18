@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { signInWithPopup } from "firebase/auth";
+import { signInWithRedirect } from "firebase/auth";
 import { auth, googleProvider } from "../firebase";
 import { theme } from "../theme";
 
@@ -32,7 +32,7 @@ export default function LoginScreen() {
     setLoading(true);
     setError("");
     try {
-      await signInWithPopup(auth, googleProvider);
+      await signInWithRedirect(auth, googleProvider);
     } catch (e) {
       console.error("Login error:", e);
       setError(e.message || "Sign-in failed. Please try again.");
@@ -198,7 +198,9 @@ export default function LoginScreen() {
           }}
         >
           {loading ? (
-            <span style={{ color: theme.colors.textMuted }}>Signing in…</span>
+            <span style={{ color: theme.colors.textMuted }}>
+              Redirecting to Google…
+            </span>
           ) : (
             <>
               <GoogleIcon /> Continue with Google

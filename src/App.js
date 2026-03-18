@@ -1,5 +1,5 @@
 import React, { useState, useEffect, createContext, useContext } from "react";
-import { onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged, getRedirectResult } from "firebase/auth";
 import { auth } from "./firebase";
 import { getOrCreateUser, refreshUserProfile } from "./utils/db";
 
@@ -51,10 +51,24 @@ export default function App() {
   const [currentLesson, setCurrentLesson] = useState(null);
   const [lessonTopic, setLessonTopic] = useState(null);
 
-  // ── API key from environment variable ──
   const apiKey = process.env.REACT_APP_ANTHROPIC_KEY || "";
 
   useEffect(() => {
+    // Handle Google redirect return
+    getRedirectResult(auth)
+      .then(async (result) => {
+        if (result?.user) {
+          const profile = await getOrCreateUser(result.user);
+          setAuthUser(result.user);
+          setUserProfile(profile);
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        console.error("Redirect error:", err);
+      });
+
+    // Ongoing auth state listener
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
         const profile = await getOrCreateUser(user);
@@ -66,6 +80,7 @@ export default function App() {
       }
       setLoading(false);
     });
+
     return () => unsubscribe();
   }, []);
 
