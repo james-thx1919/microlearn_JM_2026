@@ -1,500 +1,403 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useApp } from "../App";
-import { generateLesson } from "../utils/ai";
-import { getUserSessions } from "../utils/db";
-import { theme, topicConfig } from "../theme";
+import { topicConfig } from "../theme";
+import { saveSession } from "../utils/db";
+import { awardXP } from "../utils/gamification";
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Split a flat lesson string into card-sized chunks.
+ *  Tries to split on blank lines / markdown headings first,
+ *  then falls back to ~250-char paragraph chunks. */
+function splitIntoCards(text) {
+  if (!text) return ["Loading your lesson…"];
+
+  // If the lesson already has sections as an array, handled by caller
+  // Split on double newlines or markdown h2/h3 headings
+  const raw = text
+    .split(/\n\s*\n|(?=\n#{1,3} )/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  // Merge very short chunks with the next one (< 60 chars)
+  const merged = [];
+  let buf = "";
+  raw.forEach((chunk) => {
+    buf = buf ? buf + "\n\n" + chunk : chunk;
+    if (buf.length >= 80) { merged.push(buf); buf = ""; }
+  });
+  if (buf) merged.push(buf);
+
+  return merged.length ? merged : [text];
+}
+
+/** Render a markdown-lite card body — bold, bullet points, headings */
+function CardBody({ text, t }) {
+  const lines = text.split("\n");
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+      {lines.map((line, i) => {
+        // Heading
+        if (/^#{1,3} /.test(line)) {
+          const content = line.replace(/^#{1,3} /, "");
+          return (
+            <p key={i} style={{
+              fontFamily: t.fonts.heading, fontWeight: "700",
+              fontSize: "1.125rem", color: t.colors.text,
+              margin: 0, lineHeight: 1.3,
+            }}>
+              {content}
+            </p>
+          );
+        }
+        // Bullet
+        if (/^[-*] /.test(line)) {
+          return (
+            <div key={i} style={{ display: "flex", gap: "0.625rem", alignItems: "flex-start" }}>
+              <span style={{ color: t.colors.accent, flexShrink: 0, marginTop: "0.15rem", fontSize: "0.9rem" }}>•</span>
+              <p style={{ margin: 0, color: t.colors.text, fontSize: "1rem", lineHeight: 1.6 }}>
+                {renderInline(line.replace(/^[-*] /, ""), t)}
+              </p>
+            </div>
+          );
+        }
+        // Normal paragraph
+        if (line.trim()) {
+          return (
+            <p key={i} style={{ margin: 0, color: t.colors.text, fontSize: "1rem", lineHeight: 1.65 }}>
+              {renderInline(line, t)}
+            </p>
+          );
+        }
+        return null;
+      })}
+    </div>
+  );
+}
+
+/** Render **bold** inline markdown */
+function renderInline(text, t) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) =>
+    /^\*\*[^*]+\*\*$/.test(part)
+      ? <strong key={i} style={{ color: t.colors.text, fontWeight: "700" }}>{part.slice(2, -2)}</strong>
+      : part
+  );
+}
+
+// ─── LessonScreen ─────────────────────────────────────────────────────────────
 
 export default function LessonScreen() {
-  const {
-    apiKey,
-    lessonTopic,
-    navigate,
-    authUser,
-    currentLesson,
-    setCurrentLesson,
-  } = useApp();
-  const [lesson, setLesson] = useState(currentLesson);
-  const [loading, setLoading] = useState(!currentLesson);
-  const [error, setError] = useState("");
-  const [progress, setProgress] = useState(0);
-  const [showAction, setShowAction] = useState(false);
-  const [rated, setRated] = useState(false);
-  const scrollRef = useRef(null);
+  const { navigate, lessonTopic, currentLesson, apiKey, authUser, userProfile, setUserProfile, currentTheme: t } = useApp();
 
-  const cfg = topicConfig[lessonTopic] || topicConfig["Tech"];
+  const topic     = lessonTopic || "Tech";
+  const cfg       = topicConfig[topic] || topicConfig["Tech"];
 
+  // ── Lesson content state ───────────────────────────────────────────────────
+  const [lessonText, setLessonText]   = useState("");
+  const [cards, setCards]             = useState([]);
+  const [loading, setLoading]         = useState(!currentLesson);
+  const [error, setError]             = useState(null);
+
+  // ── Navigation state ───────────────────────────────────────────────────────
+  const [activeCard, setActiveCard]   = useState(0);
+  const containerRef                  = useRef(null);
+
+  // ── Fetch lesson if not already loaded ────────────────────────────────────
   useEffect(() => {
-    if (!lesson) fetchLesson();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      const pct =
-        (el.scrollTop / (el.scrollHeight - el.clientHeight || 1)) * 100;
-      setProgress(Math.round(pct));
-      if (pct > 65) setShowAction(true);
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, [lesson]);
-
-  const fetchLesson = async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const history = await getUserSessions(authUser.uid, 5);
-      const gen = await generateLesson(lessonTopic, history, apiKey);
-      setLesson(gen);
-      setCurrentLesson(gen);
-    } catch (e) {
-      setError(e.message || "Failed to generate lesson. Check your API key.");
-    } finally {
+    if (currentLesson) {
+      // currentLesson may be a string or { content, title, sections[] }
+      const text =
+        typeof currentLesson === "string"
+          ? currentLesson
+          : currentLesson.content || currentLesson.text || JSON.stringify(currentLesson);
+      setLessonText(text);
+      setCards(splitIntoCards(text));
       setLoading(false);
+      return;
     }
+
+    if (!apiKey) { setError("No API key configured."); setLoading(false); return; }
+
+    setLoading(true);
+    fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({
+        model: "claude-3-5-haiku-20241022",
+        max_tokens: 1024,
+        messages: [{
+          role: "user",
+          content: `Create a concise micro-lesson on the topic of "${topic}". 
+Format with 4-6 sections separated by blank lines. Each section should have a short heading (use ## prefix) and 2-3 sentences of content. Use **bold** for key terms. Keep total length to ~400 words. Be engaging and practical.`,
+        }],
+      }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        const text = data?.content?.[0]?.text || "Lesson content unavailable.";
+        setLessonText(text);
+        setCards(splitIntoCards(text));
+        setLoading(false);
+      })
+      .catch((err) => {
+        console.error(err);
+        setError("Failed to load lesson. Please try again.");
+        setLoading(false);
+      });
+  }, [topic, currentLesson, apiKey]);
+
+  // ── Track active card via IntersectionObserver ────────────────────────────
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || cards.length === 0) return;
+
+    const cardEls = container.querySelectorAll("[data-lesson-card]");
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((e) => {
+          if (e.isIntersecting) setActiveCard(Number(e.target.dataset.lessonCard));
+        });
+      },
+      { root: container, threshold: 0.55 }
+    );
+    cardEls.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [cards]);
+
+  // ── Finish lesson → quiz ──────────────────────────────────────────────────
+  const handleFinish = async () => {
+    try {
+      await saveSession(authUser.uid, { topic, lessonText, xpEarned: 10 });
+      const updated = await awardXP(authUser.uid, userProfile, 10, []);
+      if (updated) setUserProfile(updated);
+    } catch (e) {
+      console.error("Save session error:", e);
+    }
+    navigate("quiz", { topic, lesson: lessonText });
   };
 
-  const handleRate = (r) => {
-    setRated(true);
-    setTimeout(() => navigate("quiz"), 500);
-  };
-
+  // ── Loading state ──────────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          background: theme.colors.bg,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: "24px",
-        }}
-      >
-        <div
-          style={{
-            fontSize: "52px",
-            marginBottom: "16px",
-            animation: "float 2s ease-in-out infinite",
-          }}
-        >
-          {cfg.icon}
-        </div>
-        <h2
-          style={{
-            fontFamily: theme.fonts.heading,
-            fontSize: "20px",
-            color: theme.colors.text,
-            marginBottom: "8px",
-          }}
-        >
-          Crafting your lesson…
-        </h2>
-        <p style={{ color: theme.colors.textMuted, fontSize: "14px" }}>
-          AI is selecting the best content
+      <div style={{
+        height: "100vh", background: t.colors.bg,
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "1rem",
+      }}>
+        <div style={{ fontSize: "2.5rem", animation: "spin 1.5s linear infinite" }}>{cfg.icon}</div>
+        <p style={{ color: t.colors.textMuted, fontFamily: t.fonts.body, fontSize: "0.9375rem" }}>
+          Preparing your lesson…
         </p>
-        <style>{`@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}`}</style>
+        <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          background: theme.colors.bg,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: "32px",
-          textAlign: "center",
-        }}
-      >
-        <div style={{ fontSize: "48px", marginBottom: "16px" }}>😕</div>
-        <h2
-          style={{
-            fontFamily: theme.fonts.heading,
-            fontSize: "20px",
-            color: theme.colors.text,
-            marginBottom: "8px",
-          }}
-        >
-          Generation failed
-        </h2>
-        <p
-          style={{
-            color: theme.colors.textMuted,
-            fontSize: "14px",
-            marginBottom: "24px",
-            lineHeight: "1.5",
-          }}
-        >
-          {error}
-        </p>
-        <button onClick={fetchLesson} style={btnPrimary}>
-          Try Again
-        </button>
-        <button
-          onClick={() => navigate("dashboard")}
-          style={{ ...btnGhost, marginTop: "10px" }}
-        >
-          ← Back to Dashboard
+      <div style={{
+        height: "100vh", background: t.colors.bg,
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+        gap: "1rem", padding: "1.5rem",
+      }}>
+        <div style={{ fontSize: "2.5rem" }}>⚠️</div>
+        <p style={{ color: t.colors.error, textAlign: "center", fontSize: "0.9375rem" }}>{error}</p>
+        <button onClick={() => navigate("dashboard")} style={{
+          background: t.colors.accentDim, border: `1px solid ${t.colors.accent}40`,
+          borderRadius: t.radii.full, padding: "0.75rem 1.5rem",
+          color: t.colors.accent, fontFamily: t.fonts.heading, fontWeight: "600",
+          cursor: "pointer", fontSize: "0.9375rem",
+        }}>
+          Back to Topics
         </button>
       </div>
     );
   }
 
+  const progress = cards.length > 1 ? activeCard / (cards.length - 1) : 0;
+
   return (
-    <div
-      style={{
-        position: "relative",
-        height: "100vh",
-        background: theme.colors.bg,
-      }}
-    >
-      {/* Reading progress bar */}
-      <div
-        style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-          right: 0,
-          maxWidth: "430px",
-          margin: "0 auto",
-          height: "3px",
-          background: theme.colors.bgElevated,
-          zIndex: 200,
-        }}
-      >
-        <div
-          style={{
+    <div style={{ height: "100vh", background: t.colors.bg, position: "relative", overflow: "hidden" }}>
+      <style>{`
+        [data-lesson-scroll]::-webkit-scrollbar { display: none; }
+        @keyframes cardIn { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes pulse  { 0%,100% { opacity:0.4; } 50% { opacity:1; } }
+      `}</style>
+
+      {/* ── Top bar: back + progress ── */}
+      <div style={{
+        position: "fixed", top: 0, left: 0, right: 0, zIndex: 30,
+        padding: "env(safe-area-inset-top, 12px) 1.25rem 0",
+        background: `linear-gradient(to bottom, ${t.colors.bg} 60%, ${t.colors.bg}00)`,
+      }}>
+        {/* Back + topic label row */}
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", paddingTop: "0.75rem", paddingBottom: "0.625rem" }}>
+          <button onClick={() => navigate("dashboard")} style={{
+            background: t.colors.bgCard, border: `1px solid ${t.colors.border}`,
+            borderRadius: t.radii.full, width: "2rem", height: "2rem",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            cursor: "pointer", flexShrink: 0,
+          }}>
+            <span style={{ fontSize: "0.875rem", color: t.colors.textMuted }}>←</span>
+          </button>
+
+          <div style={{ flex: 1 }}>
+            <div style={{
+              display: "inline-flex", alignItems: "center", gap: "0.375rem",
+              background: cfg.bg, border: `1px solid ${cfg.border}`,
+              borderRadius: t.radii.full, padding: "0.25rem 0.75rem",
+            }}>
+              <span style={{ fontSize: "0.75rem" }}>{cfg.icon}</span>
+              <span style={{ fontSize: "0.75rem", color: cfg.color, fontWeight: "600", fontFamily: t.fonts.heading }}>
+                {topic}
+              </span>
+            </div>
+          </div>
+
+          {/* Card counter */}
+          <span style={{ color: t.colors.textMuted, fontSize: "0.75rem", fontFamily: t.fonts.heading }}>
+            {activeCard + 1} / {cards.length}
+          </span>
+        </div>
+
+        {/* Progress bar */}
+        <div style={{
+          height: "3px", background: t.colors.border, borderRadius: t.radii.full, overflow: "hidden",
+        }}>
+          <div style={{
             height: "100%",
-            width: `${progress}%`,
-            background: `linear-gradient(90deg, ${cfg.color}, ${theme.colors.accent})`,
-            transition: "width 0.3s",
-          }}
-        />
+            width: `${Math.max(((activeCard + 1) / cards.length) * 100, 4)}%`,
+            background: `linear-gradient(90deg, ${cfg.color} 0%, ${t.colors.accent} 100%)`,
+            borderRadius: t.radii.full,
+            transition: "width 0.35s ease",
+          }} />
+        </div>
       </div>
 
-      {/* Back */}
-      <button
-        onClick={() => navigate("dashboard")}
+      {/* ── Scroll-snap card container ── */}
+      <div
+        data-lesson-scroll
+        ref={containerRef}
         style={{
-          position: "fixed",
-          top: "14px",
-          left: "14px",
-          background: `${theme.colors.bgCard}E0`,
-          backdropFilter: "blur(8px)",
-          border: `1px solid ${theme.colors.border}`,
-          borderRadius: theme.radii.full,
-          padding: "7px 15px",
-          color: theme.colors.textMuted,
-          cursor: "pointer",
-          fontFamily: theme.fonts.body,
-          fontSize: "13px",
-          zIndex: 200,
+          height: "100vh",
+          overflowY: "scroll",
+          scrollSnapType: "y mandatory",
+          scrollBehavior: "smooth",
+          WebkitOverflowScrolling: "touch",
+          msOverflowStyle: "none",
+          scrollbarWidth: "none",
         }}
       >
-        ← Back
-      </button>
+        {cards.map((cardText, i) => {
+          const isActive  = i === activeCard;
+          const isLast    = i === cards.length - 1;
 
-      <div ref={scrollRef} style={{ height: "100%", overflowY: "auto" }}>
-        {/* Hero */}
-        <div
-          style={{
-            background: cfg.bg,
-            padding: "68px 24px 28px",
-            borderBottom: `1px solid ${theme.colors.border}`,
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              gap: "8px",
-              alignItems: "center",
-              marginBottom: "14px",
-            }}
-          >
-            <Tag text={lessonTopic} color={cfg.color} bg={`${cfg.color}20`} />
-            <span style={{ color: theme.colors.textMuted, fontSize: "12px" }}>
-              {lesson.readTime || "3 min read"}
-            </span>
-          </div>
-          <h1
-            style={{
-              fontFamily: theme.fonts.heading,
-              fontSize: "26px",
-              fontWeight: "800",
-              color: theme.colors.text,
-              lineHeight: "1.2",
-              letterSpacing: "-0.5px",
-              marginBottom: "10px",
-            }}
-          >
-            {lesson.title}
-          </h1>
-          <p
-            style={{
-              color: theme.colors.textMuted,
-              fontSize: "15px",
-              lineHeight: "1.55",
-            }}
-          >
-            {lesson.subtitle}
-          </p>
-        </div>
-
-        <div style={{ padding: "24px" }}>
-          {/* Hook */}
-          <div
-            style={{
-              borderLeft: `3px solid ${cfg.color}`,
-              background: `${cfg.color}08`,
-              borderRadius: `0 ${theme.radii.md} ${theme.radii.md} 0`,
-              padding: "14px 16px",
-              marginBottom: "24px",
-            }}
-          >
-            <p
-              style={{
-                color: theme.colors.text,
-                fontSize: "16px",
-                lineHeight: "1.65",
-                fontStyle: "italic",
-              }}
-            >
-              {lesson.hook}
-            </p>
-          </div>
-
-          {/* Sections */}
-          {lesson.sections?.map((sec, i) => (
-            <div key={i} style={{ marginBottom: "22px" }}>
-              <h2
-                style={{
-                  fontFamily: theme.fonts.heading,
-                  fontSize: "17px",
-                  fontWeight: "700",
-                  color: theme.colors.text,
-                  marginBottom: "8px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                }}
-              >
-                <span
-                  style={{
-                    width: "22px",
-                    height: "22px",
-                    borderRadius: "50%",
-                    background: cfg.bg,
-                    color: cfg.color,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontSize: "12px",
-                    fontWeight: "700",
-                    flexShrink: 0,
-                  }}
-                >
-                  {i + 1}
-                </span>
-                {sec.heading}
-              </h2>
-              <p
-                style={{
-                  color: theme.colors.textMuted,
-                  fontSize: "15px",
-                  lineHeight: "1.7",
-                }}
-              >
-                {sec.content}
-              </p>
-            </div>
-          ))}
-
-          {/* Key Takeaway */}
-          <div
-            style={{
-              background: theme.colors.accentDim,
-              border: `1px solid ${theme.colors.accent}25`,
-              borderRadius: theme.radii.lg,
-              padding: "18px",
-              marginBottom: "18px",
-            }}
-          >
+          return (
             <div
+              key={i}
+              data-lesson-card={i}
               style={{
-                fontSize: "11px",
-                fontWeight: "700",
-                color: theme.colors.accent,
-                letterSpacing: "1px",
-                marginBottom: "8px",
-              }}
-            >
-              KEY TAKEAWAY
-            </div>
-            <p
-              style={{
-                color: theme.colors.text,
-                fontSize: "15px",
-                fontWeight: "500",
-                lineHeight: "1.55",
-              }}
-            >
-              {lesson.keyTakeaway}
-            </p>
-          </div>
-
-          {/* Do This Now */}
-          {showAction && (
-            <div
-              style={{
-                background: cfg.bg,
-                border: `1px solid ${cfg.border}`,
-                borderRadius: theme.radii.lg,
-                padding: "18px",
-                marginBottom: "18px",
-                animation: "fadeIn 0.4s ease",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: "11px",
-                  fontWeight: "700",
-                  color: cfg.color,
-                  letterSpacing: "1px",
-                  marginBottom: "8px",
-                }}
-              >
-                DO THIS NOW →
-              </div>
-              <p
-                style={{
-                  color: theme.colors.text,
-                  fontSize: "15px",
-                  lineHeight: "1.55",
-                }}
-              >
-                {lesson.doThisNow}
-              </p>
-            </div>
-          )}
-
-          {/* Fun fact */}
-          <div
-            style={{
-              background: theme.colors.bgCard,
-              border: `1px solid ${theme.colors.border}`,
-              borderRadius: theme.radii.md,
-              padding: "14px",
-              marginBottom: "32px",
-            }}
-          >
-            <p
-              style={{
-                color: theme.colors.textMuted,
-                fontSize: "13px",
-                lineHeight: "1.6",
-              }}
-            >
-              <span style={{ fontSize: "16px", marginRight: "6px" }}>💡</span>
-              <strong style={{ color: theme.colors.text }}>Fun fact: </strong>
-              {lesson.funFact}
-            </p>
-          </div>
-
-          {/* Rating */}
-          <div style={{ textAlign: "center", marginBottom: "40px" }}>
-            <p
-              style={{
-                fontFamily: theme.fonts.heading,
-                fontWeight: "600",
-                color: theme.colors.text,
-                fontSize: "16px",
-                marginBottom: "14px",
-              }}
-            >
-              How was this lesson?
-            </p>
-            <div
-              style={{
+                height: "100vh",
+                scrollSnapAlign: "start",
                 display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
                 justifyContent: "center",
-                gap: "6px",
-                marginBottom: "18px",
+                padding: "6rem 1.5rem 3rem",
               }}
             >
-              {[1, 2, 3, 4, 5].map((r) => (
-                <button
-                  key={r}
-                  onClick={() => handleRate(r)}
-                  style={{
-                    fontSize: "30px",
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    opacity: rated ? 0.4 : 1,
-                    transition: "all 0.2s",
-                  }}
-                >
-                  ⭐
-                </button>
-              ))}
+              {/* Card */}
+              <div style={{
+                width: "100%", maxWidth: "400px",
+                background: t.isDark
+                  ? `linear-gradient(145deg, ${t.colors.bgCard} 0%, ${t.colors.bgElevated} 100%)`
+                  : t.colors.bgCard,
+                border: `1px solid ${isActive ? cfg.border : t.colors.border}`,
+                borderRadius: t.radii.xl,
+                padding: "1.75rem 1.5rem",
+                boxShadow: isActive
+                  ? `0 16px 48px ${cfg.bg}, 0 0 0 1px ${cfg.border}`
+                  : "0 4px 16px rgba(0,0,0,0.15)",
+                animation: isActive ? "cardIn 0.35s ease forwards" : "none",
+                transition: "box-shadow 0.3s ease, transform 0.3s ease",
+                transform: isActive ? "scale(1)" : "scale(0.97)",
+              }}>
+                {/* Card number chip */}
+                <div style={{
+                  display: "inline-flex", alignItems: "center", gap: "0.375rem",
+                  marginBottom: "1rem",
+                  background: cfg.bg, borderRadius: t.radii.full,
+                  padding: "0.25rem 0.75rem",
+                }}>
+                  <span style={{ fontSize: "0.6875rem", color: cfg.color, fontWeight: "700", fontFamily: t.fonts.heading, letterSpacing: "0.04em" }}>
+                    {isLast ? "FINAL" : `CARD ${i + 1}`}
+                  </span>
+                </div>
+
+                <CardBody text={cardText} t={t} />
+
+                {/* Last card CTA */}
+                {isLast && (
+                  <button
+                    onClick={handleFinish}
+                    style={{
+                      marginTop: "1.5rem",
+                      width: "100%",
+                      padding: "0.875rem",
+                      background: `linear-gradient(135deg, ${cfg.color} 0%, ${t.colors.accent} 100%)`,
+                      border: "none",
+                      borderRadius: t.radii.full,
+                      color: "#000",
+                      fontFamily: t.fonts.heading,
+                      fontWeight: "700",
+                      fontSize: "0.9375rem",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "0.5rem",
+                    }}
+                  >
+                    Take the Quiz 🎯
+                  </button>
+                )}
+              </div>
+
+              {/* Swipe hint (not on last card) */}
+              {!isLast && isActive && (
+                <div style={{
+                  marginTop: "1.25rem",
+                  display: "flex", flexDirection: "column", alignItems: "center", gap: "0.25rem",
+                  animation: "pulse 2s ease-in-out infinite",
+                }}>
+                  <span style={{ fontSize: "1.125rem" }}>↕</span>
+                  <span style={{ color: t.colors.textDim, fontSize: "0.6875rem", fontFamily: t.fonts.body, letterSpacing: "0.04em" }}>
+                    swipe for next
+                  </span>
+                </div>
+              )}
             </div>
-            {!rated && (
-              <button onClick={() => navigate("quiz")} style={btnPrimary}>
-                Take the Quiz →
-              </button>
-            )}
-          </div>
-        </div>
+          );
+        })}
       </div>
-      <style>{`@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}`}</style>
+
+      {/* ── Right-side dot progress ── */}
+      <div style={{
+        position: "fixed", right: "1rem", top: "50%",
+        transform: "translateY(-50%)", zIndex: 20,
+        display: "flex", flexDirection: "column", gap: "0.5rem",
+        pointerEvents: "none",
+      }}>
+        {cards.map((_, i) => (
+          <div key={i} style={{
+            width: i === activeCard ? "8px" : "5px",
+            height: i === activeCard ? "8px" : "5px",
+            borderRadius: "50%",
+            background: i === activeCard ? cfg.color : t.colors.border,
+            transition: "all 0.25s ease",
+          }} />
+        ))}
+      </div>
     </div>
   );
 }
-
-function Tag({ text, color, bg }) {
-  return (
-    <span
-      style={{
-        background: bg,
-        color,
-        borderRadius: theme.radii.full,
-        padding: "3px 10px",
-        fontSize: "12px",
-        fontWeight: "600",
-      }}
-    >
-      {text}
-    </span>
-  );
-}
-
-const btnPrimary = {
-  background: theme.colors.accent,
-  color: "#000",
-  border: "none",
-  borderRadius: theme.radii.md,
-  padding: "14px 32px",
-  width: "100%",
-  fontFamily: theme.fonts.heading,
-  fontSize: "15px",
-  fontWeight: "700",
-  cursor: "pointer",
-};
-
-const btnGhost = {
-  background: "none",
-  border: "none",
-  color: theme.colors.textMuted,
-  cursor: "pointer",
-  fontFamily: theme.fonts.body,
-  fontSize: "14px",
-};
