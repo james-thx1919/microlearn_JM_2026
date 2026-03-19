@@ -102,6 +102,7 @@ export default function App() {
   // ── Navigation ─────────────────────────────────────────────────────────────
   const navigate = (s, params = {}) => {
     if (params.lesson !== undefined) setCurrentLesson(params.lesson);
+    else if (s === "lesson") setCurrentLesson(null); // always fetch fresh when tapping a topic
     if (params.topic  !== undefined) setLessonTopic(params.topic);
     setScreen(s); window.scrollTo(0, 0);
   };
