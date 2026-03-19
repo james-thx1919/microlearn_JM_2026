@@ -2,24 +2,17 @@ import React, { useState, useEffect, useRef } from "react";
 import { useApp } from "../App";
 import { topicConfig } from "../theme";
 import { saveSession } from "../utils/db";
-import { awardXP } from "../utils/gamification";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Split a flat lesson string into card-sized chunks.
- *  Tries to split on blank lines / markdown headings first,
- *  then falls back to ~250-char paragraph chunks. */
 function splitIntoCards(text) {
   if (!text) return ["Loading your lesson…"];
 
-  // If the lesson already has sections as an array, handled by caller
-  // Split on double newlines or markdown h2/h3 headings
   const raw = text
     .split(/\n\s*\n|(?=\n#{1,3} )/)
     .map((s) => s.trim())
     .filter(Boolean);
 
-  // Merge very short chunks with the next one (< 60 chars)
   const merged = [];
   let buf = "";
   raw.forEach((chunk) => {
@@ -31,26 +24,30 @@ function splitIntoCards(text) {
   return merged.length ? merged : [text];
 }
 
-/** Render a markdown-lite card body — bold, bullet points, headings */
+function renderInline(text, t) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) =>
+    /^\*\*[^*]+\*\*$/.test(part)
+      ? <strong key={i} style={{ color: t.colors.text, fontWeight: "700" }}>{part.slice(2, -2)}</strong>
+      : part
+  );
+}
+
 function CardBody({ text, t }) {
   const lines = text.split("\n");
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
       {lines.map((line, i) => {
-        // Heading
         if (/^#{1,3} /.test(line)) {
-          const content = line.replace(/^#{1,3} /, "");
           return (
             <p key={i} style={{
               fontFamily: t.fonts.heading, fontWeight: "700",
-              fontSize: "1.125rem", color: t.colors.text,
-              margin: 0, lineHeight: 1.3,
+              fontSize: "1.125rem", color: t.colors.text, margin: 0, lineHeight: 1.3,
             }}>
-              {content}
+              {line.replace(/^#{1,3} /, "")}
             </p>
           );
         }
-        // Bullet
         if (/^[-*] /.test(line)) {
           return (
             <div key={i} style={{ display: "flex", gap: "0.625rem", alignItems: "flex-start" }}>
@@ -61,7 +58,6 @@ function CardBody({ text, t }) {
             </div>
           );
         }
-        // Normal paragraph
         if (line.trim()) {
           return (
             <p key={i} style={{ margin: 0, color: t.colors.text, fontSize: "1rem", lineHeight: 1.65 }}>
@@ -75,38 +71,27 @@ function CardBody({ text, t }) {
   );
 }
 
-/** Render **bold** inline markdown */
-function renderInline(text, t) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-  return parts.map((part, i) =>
-    /^\*\*[^*]+\*\*$/.test(part)
-      ? <strong key={i} style={{ color: t.colors.text, fontWeight: "700" }}>{part.slice(2, -2)}</strong>
-      : part
-  );
-}
-
 // ─── LessonScreen ─────────────────────────────────────────────────────────────
 
 export default function LessonScreen() {
-  const { navigate, lessonTopic, currentLesson, apiKey, authUser, userProfile, setUserProfile, currentTheme: t } = useApp();
+  const {
+    navigate, lessonTopic, currentLesson, apiKey,
+    authUser, currentTheme: t,
+  } = useApp();
 
-  const topic     = lessonTopic || "Tech";
-  const cfg       = topicConfig[topic] || topicConfig["Tech"];
+  const topic = lessonTopic || "Tech";
+  const cfg   = topicConfig[topic] || topicConfig["Tech"];
 
-  // ── Lesson content state ───────────────────────────────────────────────────
-  const [lessonText, setLessonText]   = useState("");
-  const [cards, setCards]             = useState([]);
-  const [loading, setLoading]         = useState(!currentLesson);
-  const [error, setError]             = useState(null);
+  const [lessonText, setLessonText] = useState("");
+  const [cards, setCards]           = useState([]);
+  const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState(null);
+  const [activeCard, setActiveCard] = useState(0);
+  const containerRef                = useRef(null);
 
-  // ── Navigation state ───────────────────────────────────────────────────────
-  const [activeCard, setActiveCard]   = useState(0);
-  const containerRef                  = useRef(null);
-
-  // ── Fetch lesson if not already loaded ────────────────────────────────────
+  // ── Fetch / use existing lesson ───────────────────────────────────────────
   useEffect(() => {
     if (currentLesson) {
-      // currentLesson may be a string or { content, title, sections[] }
       const text =
         typeof currentLesson === "string"
           ? currentLesson
@@ -122,13 +107,17 @@ export default function LessonScreen() {
     setLoading(true);
     fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
       body: JSON.stringify({
         model: "claude-3-5-haiku-20241022",
         max_tokens: 1024,
         messages: [{
           role: "user",
-          content: `Create a concise micro-lesson on the topic of "${topic}". 
+          content: `Create a concise micro-lesson on the topic of "${topic}".
 Format with 4-6 sections separated by blank lines. Each section should have a short heading (use ## prefix) and 2-3 sentences of content. Use **bold** for key terms. Keep total length to ~400 words. Be engaging and practical.`,
         }],
       }),
@@ -147,7 +136,7 @@ Format with 4-6 sections separated by blank lines. Each section should have a sh
       });
   }, [topic, currentLesson, apiKey]);
 
-  // ── Track active card via IntersectionObserver ────────────────────────────
+  // ── Track active card ─────────────────────────────────────────────────────
   useEffect(() => {
     const container = containerRef.current;
     if (!container || cards.length === 0) return;
@@ -165,24 +154,28 @@ Format with 4-6 sections separated by blank lines. Each section should have a sh
     return () => observer.disconnect();
   }, [cards]);
 
-  // ── Finish lesson → quiz ──────────────────────────────────────────────────
+  // ── Finish → save session → quiz ──────────────────────────────────────────
   const handleFinish = async () => {
     try {
-      await saveSession(authUser.uid, { topic, lessonText, xpEarned: 10 });
-      const updated = await awardXP(authUser.uid, userProfile, 10, []);
-      if (updated) setUserProfile(updated);
+      await saveSession(authUser.uid, {
+        topic,
+        lessonTitle: topic,
+        lessonText,
+        xpEarned: 10,
+      });
     } catch (e) {
       console.error("Save session error:", e);
     }
     navigate("quiz", { topic, lesson: lessonText });
   };
 
-  // ── Loading state ──────────────────────────────────────────────────────────
+  // ── Loading ───────────────────────────────────────────────────────────────
   if (loading) {
     return (
       <div style={{
         height: "100vh", background: t.colors.bg,
-        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "1rem",
+        display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center", gap: "1rem",
       }}>
         <div style={{ fontSize: "2.5rem", animation: "spin 1.5s linear infinite" }}>{cfg.icon}</div>
         <p style={{ color: t.colors.textMuted, fontFamily: t.fonts.body, fontSize: "0.9375rem" }}>
@@ -197,7 +190,8 @@ Format with 4-6 sections separated by blank lines. Each section should have a sh
     return (
       <div style={{
         height: "100vh", background: t.colors.bg,
-        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+        display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center",
         gap: "1rem", padding: "1.5rem",
       }}>
         <div style={{ fontSize: "2.5rem" }}>⚠️</div>
@@ -205,16 +199,14 @@ Format with 4-6 sections separated by blank lines. Each section should have a sh
         <button onClick={() => navigate("dashboard")} style={{
           background: t.colors.accentDim, border: `1px solid ${t.colors.accent}40`,
           borderRadius: t.radii.full, padding: "0.75rem 1.5rem",
-          color: t.colors.accent, fontFamily: t.fonts.heading, fontWeight: "600",
-          cursor: "pointer", fontSize: "0.9375rem",
+          color: t.colors.accent, fontFamily: t.fonts.heading,
+          fontWeight: "600", cursor: "pointer", fontSize: "0.9375rem",
         }}>
           Back to Topics
         </button>
       </div>
     );
   }
-
-  const progress = cards.length > 1 ? activeCard / (cards.length - 1) : 0;
 
   return (
     <div style={{ height: "100vh", background: t.colors.bg, position: "relative", overflow: "hidden" }}>
@@ -224,13 +216,12 @@ Format with 4-6 sections separated by blank lines. Each section should have a sh
         @keyframes pulse  { 0%,100% { opacity:0.4; } 50% { opacity:1; } }
       `}</style>
 
-      {/* ── Top bar: back + progress ── */}
+      {/* ── Top bar ── */}
       <div style={{
         position: "fixed", top: 0, left: 0, right: 0, zIndex: 30,
         padding: "env(safe-area-inset-top, 12px) 1.25rem 0",
         background: `linear-gradient(to bottom, ${t.colors.bg} 60%, ${t.colors.bg}00)`,
       }}>
-        {/* Back + topic label row */}
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", paddingTop: "0.75rem", paddingBottom: "0.625rem" }}>
           <button onClick={() => navigate("dashboard")} style={{
             background: t.colors.bgCard, border: `1px solid ${t.colors.border}`,
@@ -254,16 +245,13 @@ Format with 4-6 sections separated by blank lines. Each section should have a sh
             </div>
           </div>
 
-          {/* Card counter */}
           <span style={{ color: t.colors.textMuted, fontSize: "0.75rem", fontFamily: t.fonts.heading }}>
             {activeCard + 1} / {cards.length}
           </span>
         </div>
 
         {/* Progress bar */}
-        <div style={{
-          height: "3px", background: t.colors.border, borderRadius: t.radii.full, overflow: "hidden",
-        }}>
+        <div style={{ height: "3px", background: t.colors.border, borderRadius: t.radii.full, overflow: "hidden" }}>
           <div style={{
             height: "100%",
             width: `${Math.max(((activeCard + 1) / cards.length) * 100, 4)}%`,
@@ -274,39 +262,32 @@ Format with 4-6 sections separated by blank lines. Each section should have a sh
         </div>
       </div>
 
-      {/* ── Scroll-snap card container ── */}
+      {/* ── Scroll-snap cards ── */}
       <div
         data-lesson-scroll
         ref={containerRef}
         style={{
-          height: "100vh",
-          overflowY: "scroll",
-          scrollSnapType: "y mandatory",
-          scrollBehavior: "smooth",
+          height: "100vh", overflowY: "scroll",
+          scrollSnapType: "y mandatory", scrollBehavior: "smooth",
           WebkitOverflowScrolling: "touch",
-          msOverflowStyle: "none",
-          scrollbarWidth: "none",
+          msOverflowStyle: "none", scrollbarWidth: "none",
         }}
       >
         {cards.map((cardText, i) => {
-          const isActive  = i === activeCard;
-          const isLast    = i === cards.length - 1;
+          const isActive = i === activeCard;
+          const isLast   = i === cards.length - 1;
 
           return (
             <div
               key={i}
               data-lesson-card={i}
               style={{
-                height: "100vh",
-                scrollSnapAlign: "start",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
+                height: "100vh", scrollSnapAlign: "start",
+                display: "flex", flexDirection: "column",
+                alignItems: "center", justifyContent: "center",
                 padding: "6rem 1.5rem 3rem",
               }}
             >
-              {/* Card */}
               <div style={{
                 width: "100%", maxWidth: "400px",
                 background: t.isDark
@@ -322,9 +303,8 @@ Format with 4-6 sections separated by blank lines. Each section should have a sh
                 transition: "box-shadow 0.3s ease, transform 0.3s ease",
                 transform: isActive ? "scale(1)" : "scale(0.97)",
               }}>
-                {/* Card number chip */}
                 <div style={{
-                  display: "inline-flex", alignItems: "center", gap: "0.375rem",
+                  display: "inline-flex", alignItems: "center",
                   marginBottom: "1rem",
                   background: cfg.bg, borderRadius: t.radii.full,
                   padding: "0.25rem 0.75rem",
@@ -336,26 +316,17 @@ Format with 4-6 sections separated by blank lines. Each section should have a sh
 
                 <CardBody text={cardText} t={t} />
 
-                {/* Last card CTA */}
                 {isLast && (
                   <button
                     onClick={handleFinish}
                     style={{
-                      marginTop: "1.5rem",
-                      width: "100%",
-                      padding: "0.875rem",
+                      marginTop: "1.5rem", width: "100%", padding: "0.875rem",
                       background: `linear-gradient(135deg, ${cfg.color} 0%, ${t.colors.accent} 100%)`,
-                      border: "none",
-                      borderRadius: t.radii.full,
-                      color: "#000",
-                      fontFamily: t.fonts.heading,
-                      fontWeight: "700",
-                      fontSize: "0.9375rem",
+                      border: "none", borderRadius: t.radii.full,
+                      color: "#000", fontFamily: t.fonts.heading,
+                      fontWeight: "700", fontSize: "0.9375rem",
                       cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: "0.5rem",
+                      display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem",
                     }}
                   >
                     Take the Quiz 🎯
@@ -363,7 +334,6 @@ Format with 4-6 sections separated by blank lines. Each section should have a sh
                 )}
               </div>
 
-              {/* Swipe hint (not on last card) */}
               {!isLast && isActive && (
                 <div style={{
                   marginTop: "1.25rem",
@@ -381,7 +351,7 @@ Format with 4-6 sections separated by blank lines. Each section should have a sh
         })}
       </div>
 
-      {/* ── Right-side dot progress ── */}
+      {/* ── Side dot indicators ── */}
       <div style={{
         position: "fixed", right: "1rem", top: "50%",
         transform: "translateY(-50%)", zIndex: 20,
