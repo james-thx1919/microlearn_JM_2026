@@ -2,65 +2,103 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
-    />
-    <meta name="theme-color" content="#080A0F" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+
+    <!-- ── PWA / Home Screen ─────────────────────────────────────────── -->
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- iOS PWA: hide Safari chrome when launched from home screen -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta
-      name="apple-mobile-web-app-status-bar-style"
-      content="black-translucent"
-    />
-    <title>MicroLearn</title>
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="MicroLearn" />
+
+    <!-- iOS home screen icons (Safari ignores manifest icons) -->
+    <link rel="apple-touch-icon" href="/icons/icon-152.png" />
+    <link rel="apple-touch-icon" sizes="72x72"   href="/icons/icon-72.png" />
+    <link rel="apple-touch-icon" sizes="96x96"   href="/icons/icon-96.png" />
+    <link rel="apple-touch-icon" sizes="128x128" href="/icons/icon-128.png" />
+    <link rel="apple-touch-icon" sizes="144x144" href="/icons/icon-144.png" />
+    <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-152.png" />
+    <link rel="apple-touch-icon" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="512x512" href="/icons/icon-512.png" />
+
+    <!-- iOS launch / splash screen colour -->
+    <meta name="msapplication-TileColor" content="#080A0F" />
+    <meta name="theme-color" content="#080A0F" />
+
+    <!-- ── Standard favicon ──────────────────────────────────────────── -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-96.png" />
+    <link rel="shortcut icon" href="/icons/icon-192.png" />
+
+    <!-- ── SEO / Social ──────────────────────────────────────────────── -->
+    <title>MicroLearn — 5-minute lessons</title>
+    <meta name="description" content="Bite-sized lessons, big results. Learn something new in just 5 minutes a day." />
+    <meta name="mobile-web-app-capable" content="yes" />
+
+    <!-- Open Graph -->
+    <meta property="og:title"       content="MicroLearn" />
+    <meta property="og:description" content="Bite-sized lessons, big results." />
+    <meta property="og:image"       content="/icons/icon-512.png" />
+    <meta property="og:type"        content="website" />
+
+    <!-- ── Fonts ─────────────────────────────────────────────────────── -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,400&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=DM+Sans:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
+
+    <!-- ── Global base styles ─────────────────────────────────────────── -->
     <style>
-      *,
-      *::before,
-      *::after {
-        margin: 0;
-        padding: 0;
+      *, *::before, *::after {
         box-sizing: border-box;
         -webkit-tap-highlight-color: transparent;
+        -webkit-touch-callout: none;
       }
-      html,
-      body {
+
+      html, body {
+        margin: 0;
+        padding: 0;
         height: 100%;
-      }
-      body {
-        background: #080a0f;
-        color: #eef0f5;
-        font-family: "DM Sans", sans-serif;
+        /* Prevent bounce scroll on iOS — app handles its own scrolling */
+        overscroll-behavior: none;
+        background: #080A0F;
+        font-family: 'DM Sans', sans-serif;
         -webkit-font-smoothing: antialiased;
-        overflow-x: hidden;
+        -moz-osx-font-smoothing: grayscale;
       }
+
+      /* Respect iOS safe areas (notch, home indicator) */
       #root {
         min-height: 100vh;
-        max-width: 430px;
-        margin: 0 auto;
-        position: relative;
-        overflow-x: hidden;
+        min-height: -webkit-fill-available;
+        padding-top: env(safe-area-inset-top);
+        padding-bottom: env(safe-area-inset-bottom);
       }
-      ::-webkit-scrollbar {
-        display: none;
+
+      /* Prevent text size adjustment on orientation change */
+      body {
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
       }
-      * {
-        scrollbar-width: none;
-      }
+
+      /* Remove default button styles globally */
       button {
+        -webkit-appearance: none;
+        appearance: none;
         font-family: inherit;
       }
-      input {
-        font-family: inherit;
+
+      /* Smooth scrolling everywhere */
+      * {
+        scroll-behavior: smooth;
       }
     </style>
   </head>
+
   <body>
+    <noscript>You need to enable JavaScript to run MicroLearn.</noscript>
     <div id="root"></div>
   </body>
 </html>
